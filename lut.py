@@ -7,10 +7,12 @@ Description:
   Using 6SV2.1 to simulate atmospheric condition in certain options
 
 Arguments:
-  -m, --month=N (REQUIRED)
+  -m, --month=N (OPTIONAL)
          Specify the month range from 1 to 12
-  -d, --day=N (REQUIRED)
+         1 by default
+  -d, --day=N (OPTIONAL)
          Specify the day which start at 1
+         1 by default
   -a, --atmospheremode=N (OPTIONAL)
          +---+--------------------------+
          | N | Meaning                  |
@@ -52,7 +54,7 @@ Arguments:
   -f, --max-sza=N (OPTIONAL)
          Specify the max value of solar zenith angle range from 0 to 180
          Required if min-sza is presented
-         180 by default
+         90 by default
   -g, --step-sza=N (OPTIONAL)
          Specify the step of solar zenith angle range from 0 to 180
          10 by default if min-sza and max-sza is not specified
@@ -64,7 +66,7 @@ Arguments:
   -j, --max-vza=N (OPTIONAL)
          Specify the max value of view zenith angle range from 0 to 180
          Required if min-vza is presented
-         180 by default
+         90 by default
   -k, --step-vza=N (OPTIONAL)
          Specify the step of view zenith angle range from 0 to 180
          10 by default if min-vza and max-vza is not specified
@@ -142,33 +144,42 @@ LUT technical description in C style:
     struct Header2 header2;
   };
   
-  struct Body {
-    float p;               //path reflectance
-    float s;               //spherical albedo
-    float t1;              //total downward scattering transmittance
-    float t2;              //total upward scattering transmittance
-    float t;               //global gas transmittance
-    float aot550;          //aot550
-    struct Body *nextbody; //next body
+  struct Body3 {
+    float p;                  //path reflectance in certian angles and aot550
+    struct Body3 *body3_of_next_angles_aot550;
+  };
+  
+  struct Body2 {
+    float tdn;                //downward scattering transmittance in certain zenith angle and aot550
+    float tup;                //upward scattering transmittance in certain zenith angle and aot550
+    float t;                  //total gaseous transmittance in certain zenith angle and aot550
+    struct Body3 body3;
+    struct Body2 *body2_of_next_zenith_angle_aot550;
+  };
+  
+  struct Body1 {
+    float s;                  //spherical albedo in certain aot550
+    struct Body2 body2;
+    struct Body1 *body1_of_next_aot550;
   };
   
   struct LUTfile {
     struct Header header;
-    struct Body body;
+    struct Body1 body1;
   };
 
-Author: Jay Tsung, Apr 9 21'
-  
+Author: Jay Tsung, Apr 13 21'
+
 """
 
 
 import sys
-import os.path as path
+from time import ctime
 from array import array
-from os import remove as rm
+from copy import deepcopy
 from re import split as strtok
+from os import path, remove as rm
 from getopt import getopt, GetoptError
-from itertools import product as multiloop
 from subprocess import getstatusoutput as execute
 
 
@@ -181,6 +192,16 @@ def usage():
       if l.startswith('"""'): break
       else: print(l.rstrip())
   sys.exit(2)
+
+
+#Return all elements from a list in 1-dimention
+#example: [1, [2, 3], [4, [5, 6]]] -> [1, 2, 3, 4, 5, 6]
+def list1d(a):
+  r=[]
+  for i in a:
+    if type(i) is list: r+=list1d(i)
+    else: r.append(i)
+  return r
 
 
 class LUT:
@@ -196,7 +217,6 @@ class LUT:
     self.s=floatn
     self.pathref=floatn
     self.lutfile=lutfile
-    self.currentaot=floatn
   
   #write header to LUT file
   def writeLUTheader(self, sza, vza, raa, aot550):
@@ -205,7 +225,7 @@ class LUT:
       array('f', list(sza)+list(vza)+list(raa)+list(aot550)).tofile(fo)
   
   #update input file
-  #par=(sza,raa,vza,month,day,atmode,aermod,aot550,wv)
+  #par=(sza, raa, vza, month, day, atmode, aermod, aot550, wv)
   def modifyinput(self, par):
     self.currentaot=par[7]
     with open(self.inputfile, 'w+') as fo:
@@ -241,16 +261,16 @@ class LUT:
       if tmp.find('reflectance I')!=-1: self.pathref=float(strtok(' +', tmp.split(':')[1])[3])
   
   #write result to lut file
-  def appendlut(self):
+  def writedata(self, lutdata):
+    lutdata=list1d(lutdata)
     with open(self.lutfile, 'ab') as fo:
-      array('f', [self.pathref, self.s, self.scatransdown, self.scatransup, self.gastrans, self.currentaot]).tofile(fo)
-
-  #one step to append lut file
+      array('f', lutdata).tofile(fo)
+  
+  #one step
   def onestep(self, par):
     self.modifyinput(par)
     self.run()
     self.extract()
-    self.appendlut()
   
   #EOL of this LUT class
   def __del__(self):
@@ -261,13 +281,14 @@ if __name__=='__main__':
   
   #Default parameters
   sixsfile, inputfile, lutfile = [path.join(path.dirname(sys.argv[0]), _) for _ in ['sixsV2.1', 'tmp', 'LUT']]
-  sza=range(0, 190, 10)
-  vza=range(0, 190, 10)
-  raa=range(0, 190, 10)
-  aot=[0.01, 0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 1, 2, 3, 5]
+  sza=[0, 12, 24, 36, 48, 54, 60, 66, 72, 78, 84]
+  vza=[0, 6, 12, 18, 24, 30, 36, 42, 48, 54, 60, 66, 72, 78, 84]
+  raa=[0, 12, 24, 36, 48, 60, 72, 84, 96, 108, 120, 132, 144, 156, 168, 180]
+  aot=[0.01, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.6, 0.8, 1, 2, 5]
   wv=0.55
   atmode=6
   aermod=1
+  month, day=1, 1
   
   #Update parameters from CLI
   try:
@@ -309,11 +330,6 @@ if __name__=='__main__':
       raa=range(raa_min, raa_max+step, step)
   except GetoptError: usage()
   
-  #Exit if date is none
-  if 'month' not in vars() or 'day' not in vars():
-    print('Specify the month and day with lut.py --month=N --day=N')
-    sys.exit(2)
-  
   #Ensure the input
   print('Please ensure the following options you entered')
   print('6SV executable file: ', sixsfile)
@@ -330,17 +346,38 @@ if __name__=='__main__':
     print('Abort.')
     sys.exit(2)
   
+  print('Start at: ', ctime())
+  
   if path.exists(lutfile): rm(lutfile)
   lut=LUT(inputfile, sixsfile, lutfile)
-  n=0
-  total=len(sza)*len(vza)*len(raa)*len(aot)
   lut.writeLUTheader(sza, vza, raa, aot)
   print('\r', end='')
-  for _sza, _vza, _raa, _aot in multiloop(sza, vza, raa, aot):
-    lut.onestep((_sza, _raa, _vza, month, day, atmode, aermod, _aot, wv))
-    n+=1
-    if str(n).endswith('00'): print('\r', '{:6.2f}%'.format(n*100/total), end='', flush=True)
+  
+  tmp1=[0 for _ in raa]
+  tmp2=[0 for _ in range(len(sza)*len(vza))]
+  for i in range(len(tmp2)):
+    tmp2[i]=[0, 0, 0, deepcopy(tmp1)]
+  lutdata=[0 for _ in aot]
+  for i in range(len(lutdata)):
+    lutdata[i]=[0, deepcopy(tmp2)]
+  
+  n=0
+  lsza, lvza, lraa, laot=len(sza), len(vza), len(raa), len(aot)
+  total=lsza*lvza*lraa*laot
+  for i in range(laot):
+    for j in range(lsza):
+      for k in range(lvza):
+        for l in range(lraa):
+          lut.onestep((sza[j], raa[l], vza[k], month, day, atmode, aermod, aot[i], wv))
+          lutdata[i][1][lvza*j+k][3][l]=lut.pathref
+          n+=1
+          if str(n).endswith('00'): print('\r', '{:6.2f}%'.format(n*100/total), end='', flush=True)
+        lutdata[i][1][lvza*j+k][0:3]=[lut.scatransdown, lut.scatransup, lut.gastrans]
+    lutdata[i][0]=lut.s
+  lut.writedata(lutdata)
   lut=None
   print('\nLUT file in: ', lutfile)
+  
+  print('End at:   ', ctime())
   sys.exit(0)
 
