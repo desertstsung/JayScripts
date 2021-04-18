@@ -1,11 +1,13 @@
 #!/usr/bin/python3
 
 #import getopt
-import warnings
-warnings.filterwarnings('ignore')
+from warnings import filterwarnings
+filterwarnings('ignore')
 
 import sys
 import numpy as np
+from array import array
+from copy import deepcopy
 from h5py import File as openh5
 
 
@@ -36,68 +38,63 @@ def readlut(fn):
     lutraa=np.frombuffer(fo.read(4*n[2]), dtype=np.float32)
     lutaot=np.frombuffer(fo.read(4*n[3]), dtype=np.float32)
     
-    lutdata={_:0 for _ in lutsza}
-    lutdata={_:lutdata.copy() for _ in lutvza}
-    lutdata={_:lutdata.copy() for _ in lutraa}
-    
-    for i in lutsza:
-      for j in lutvza:
-        for k in lutraa:
-          lutdata[k][j][i]=[]
-          for _ in range(n[3]):
-            lutdata[k][j][i].append(np.frombuffer(fo.read(24), dtype=np.float32))
+    tmp1=[0 for _ in lutraa]
+    tmp2=[0 for _ in range(len(lutsza)*len(lutvza))]
+    for i in range(len(tmp2)):
+      tmp2[i]=[0, 0, 0, deepcopy(tmp1)]
+    lutdata=[0 for _ in lutaot]
+    for i in range(len(lutdata)):
+      lutdata[i]=[0, deepcopy(tmp2)]
+    for i in range(len(lutaot)):
+      lutdata[i][0]=array('f', fo.read(4))[0] #pherical albedo
+      for j in range(len(lutsza)):
+        for k in range(len(lutvza)):
+          lutdata[i][1][len(lutvza)*j+k][0:3]=array('f', fo.read(12)) #tdn, tup, t
+          for l in range(len(lutraa)):
+            lutdata[i][1][len(lutvza)*j+k][3][l]=array('f', fo.read(4))[0] #path ref
     if fo.seek(0, 1)!=fo.seek(0, 2):
       fo.close()
       print('Invalid LUT')
-      sys.exit(2)
-  return lutdata, lutsza, lutvza, lutraa
+  return lutdata, lutsza, lutvza, lutraa, lutaot
 
 
 #Interpolation between x1 and x2
 #Returns scalar if x is scalar
-def interpalg(x1, y1, x2, y2, x):
-  try: feq=y1.all()==y2.all()
+def interpalg(x1, x, x2, y1, y2):
+  try: feq=(y1==y2).all()
   except AttributeError: feq=y1==y2
-  return y1 if feq else (x1*y2-x2*y1-x*(y2-y1))/(x1-x2)
+  return y1 if feq else y1+(y2-y1)*(x-x1)/(x2-x1)
 
 
-def interp(lutdata, lutsza, lutvza, lutraa, csza, cvza, craa):
-  for i in range(len(lutsza)):
-    if lutsza[i]-csza<0: sidx1, sidx2=lutsza[i], lutsza[i+1]
-  for j in range(len(lutvza)):
-    if lutvza[j]-cvza<0: vidx1, vidx2=lutvza[j], lutvza[j+1]
-  for k in range(len(lutraa)):
-    if lutraa[k]-craa<0: ridx1, ridx2=lutraa[k], lutraa[k+1]
+def calproper(isza, ivza, iraa, lutsza, lutvza, lutraa, lutdata, lenaot):
+  lutsza=np.array(lutsza)
+  lutvza=np.array(lutvza)
+  lutraa=np.array(lutraa)
   
-  r={_:0 for _ in [sidx1, sidx2]}
-  r={_:r.copy() for _ in [vidx1, vidx2]}
-  r={_:r.copy() for _ in [ridx1, ridx2]}
-  for i in [sidx1, sidx2]:
-    for j in [vidx1, vidx2]:
-      for k in [ridx1, ridx2]:
-        r[k][j][i]=lutdata[k][j][i]
+  sindex=((lutsza-isza)>0).argmax()
+  vindex=((lutvza-ivza)>0).argmax()
+  rindex=((lutraa-iraa)>0).argmax()
+  sindex=[sindex-1, sindex]
+  vindex=[vindex-1, vindex]
+  rindex=[rindex-1, rindex]
   
-  for x in [vidx1, vidx2]:
-    for y in [ridx1, ridx2]:
-      for z in range(len(r[k][j][i])):
-        data1=r[y][x][sidx1][z]
-        data2=r[y][x][sidx2][z]
-        r[y][x][sidx1][z]=interpalg(sidx1, data1, sidx2, data2, csza)
-  
-  for y in [ridx1, ridx2]:
-    for z in range(len(r[k][j][i])):
-      data1=r[y][vidx1][sidx1][z]
-      data2=r[y][vidx2][sidx1][z]
-      r[y][vidx1][sidx1][z]=interpalg(vidx1, data1, vidx2, data2, cvza)
-  
-  for z in range(len(r[k][j][i])):
-    data1=r[ridx1][vidx1][sidx1][z]
-    data2=r[ridx2][vidx1][sidx1][z]
-    r[ridx1][vidx1][sidx1][z]=interpalg(ridx1, data1, ridx2, data2, craa)
-    
-  rt=r[ridx1][vidx1][sidx1]
-  del r
-  return rt
+  r=np.ndarray(shape=(8, 5*lenaot))
+  loop=range(lenaot)
+  lenvza=len(lutvza)
+  for i in range(2): #sza index
+    for j in range(2): #vza index
+      for k in range(2): #raa index
+        r[4*i+2*j+k, :lenaot]=[lutdata[_][0] for _ in loop] #s
+        r[4*i+2*j+k, lenaot:2*lenaot]=[lutdata[_][1][lenvza*sindex[i]+vindex[j]][0] for _ in loop] #tdn
+        r[4*i+2*j+k, 2*lenaot:3*lenaot]=[lutdata[_][1][lenvza*sindex[i]+vindex[j]][1] for _ in loop] #tup
+        r[4*i+2*j+k, 3*lenaot:4*lenaot]=[lutdata[_][1][lenvza*sindex[i]+vindex[j]][2] for _ in loop] #t
+        r[4*i+2*j+k, 4*lenaot:]=[lutdata[_][1][lenvza*sindex[i]+vindex[j]][3][rindex[k]] for _ in loop] #path ref
+
+  for i in range(4):
+    r[i, :]=interpalg(lutsza[sindex[0]], isza, lutsza[sindex[1]], r[i, :], r[i+4, :])
+  for i in range(2):
+    r[i, :]=interpalg(lutvza[vindex[0]], ivza, lutvza[vindex[1]], r[i, :], r[i+2, :])
+  return interpalg(lutraa[rindex[0]], iraa, lutraa[rindex[1]], r[0, :], r[1, :])
   
 
 def iscloudy(bluearray, irarray, ns, nl, blue_th1=0.0025, blue_th2=0.4, ir_th1=0.003, ir_th2=0.025):
@@ -114,16 +111,17 @@ def iscloudy(bluearray, irarray, ns, nl, blue_th1=0.0025, blue_th2=0.4, ir_th1=0
   return not (bluelikeclear1 and bluelikeclear2 and irlikeclear1 and irlikeclear2)
   
 
-#rt -> list: [array(p, s, t1, t2, t, aot550), array, ... array]
-def inversion(csr, rt, ctoa):
+#rt -> [s1, s2, ..., tdn1, tdn2, ..., ..., p1, p2, ..., pn]
+def inversion(csr, rt, ctoa, lutaot):
   stoa=[]
-  for i in range(len(rt)):
-    tmp=(rt[i][0]+(rt[i][2]*rt[i][3]*csr)/(1-rt[i][1]*csr))*rt[i][4]
-    if tmp==ctoa: return rt[i][3]
-    else: stoa.append(tmp)
+  lenaot=len(lutaot)
+  for i in range(lenaot):
+    #s=rt[i], tdn=rt[i+lenaot], tup=rt[i+2*lenaot], t=rt[i+3*lenaot], pr=rt[i+4*lenaot]
+    tmp=(rt[i+4*lenaot]+(rt[i+lenaot]*rt[i+2*lenaot]*csr)/(1-rt[i]*csr))*rt[i+3*lenaot]
+    stoa.append(tmp)
   
-  for i in range(len(rt)-1):
-    if stoa[i]<ctoa<stoa[i+1]: return interpalg(stoa[i], rt[i][3], stoa[i+1], rt[i+1][3], ctoa)
+  for i in range(lenaot-1):
+    if stoa[i]<ctoa<stoa[i+1]: return interpalg(stoa[i], ctoa, stoa[i+1], lutaot[i], lutaot[i+1])
   return float('nan')
 
 
@@ -136,42 +134,27 @@ def writetoh5(fn, aot, lon, lat):
 
 def main(psacfn, lutfn, aotfn):
   toa, sr, bl, ir, sza, vza, raa, lon, lat=readpsac(psacfn)
-  lutdata, lutsza, lutvza, lutraa=readlut(lutfn)
+  lutdata, lutsza, lutvza, lutraa, lutaot=readlut(lutfn)
   
-  ncloud=0
-  noutofrange=0
-  nwell=0
+  outofrange=0
+  well=0
   
   aotinv=sr.copy()
+  lenaot=len(lutaot)
   for nl in range(sr.shape[0]):
     for ns in range(sr.shape[1]):
-      if nl in [0, sr.shape[0]-1] or ns in [0, sr.shape[1]-1]: #edge pixel
-        if bl[nl, ns]>0.4 and ir[nl, ns]>0.025:
-          ncloud+=1
-          aotinv[nl, ns]=float('nan') #cloudy
-        else:
-          aotinv[nl, ns]=inversion(sr[nl, ns], interp(lutdata, lutsza, lutvza, lutraa,
-          sza[nl, ns], vza[nl, ns], raa[nl, ns]), toa[nl, ns])
-          if 0<aotinv[nl, ns]<6: nwell+=1
-          else: noutofrange+=1
-      else: #inner pixel
-        if iscloudy(bl, ir, ns, nl):
-          ncloud+=1
-          aotinv[nl, ns]=float('nan')
-        else:
-          aotinv[nl, ns]=inversion(sr[nl, ns], interp(lutdata, lutsza, lutvza, lutraa,
-          sza[nl, ns], vza[nl, ns], raa[nl, ns]), toa[nl, ns])
-          if 0<aotinv[nl, ns]<6: nwell+=1
-          else: noutofrange+=1
+      aotinv[nl, ns]=inversion(sr[nl, ns], calproper(sza[nl, ns], vza[nl, ns], raa[nl, ns],
+        lutsza, lutvza, lutraa, lutdata, lenaot), toa[nl, ns], lutaot)
+      if 0<aotinv[nl, ns]<6: well+=1
+      else: outofrange+=1
   
   writetoh5(aotfn, aotinv, lon, lat)
-  print('n of cloudy  : ', ncloud)
-  print('n of outrange: ', noutofrange)
-  print('n of success : ', nwell)
+  print('n of outrange: ', outofrange)
+  print('n of success : ', well)
 
 
 if __name__=='__main__':
   psacfn='HJ2A_PSAC_E116.9_N35.8_20201106_L10000015715.hdf5'
-  lutfn='LUT_HJ2A_670'
+  lutfn='LUT_670'
   outfn='AOT550.hdf5'
   main(psacfn, lutfn, outfn)
